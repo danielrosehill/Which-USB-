@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+from typing import Dict, List, Tuple
+import difflib
+from dataclasses import dataclass
+import time
+
+@dataclass
+class USBDevice:
+    bus: str
+    device: str
+    vendor_id: str
+    product_id: str
+    description: str
+
+def run_lsusb() -> List[USBDevice]:
+    """Run lsusb and parse the output into USBDevice objects."""
+    try:
+        result = subprocess.run(['lsusb'], capture_output=True, text=True, check=True)
+        devices = []
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 6:
+                bus = parts[1].strip(':')
+                device = parts[3].strip(':')
+                vendor_product = parts[5].split(':')
+                if len(vendor_product) == 2:
+                    vendor_id, product_id = vendor_product
+                    description = ' '.join(parts[6:]) if len(parts) > 6 else 'Unknown device'
+                    devices.append(USBDevice(bus, device, vendor_id, product_id, description))
+        return devices
+    except subprocess.CalledProcessError as e:
+        print(f"Error running lsusb: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def get_devices_difference(before: List[USBDevice], after: List[USBDevice]) -> List[USBDevice]:
+    """Find devices that are in 'after' but not in 'before'."""
+    before_set = {(d.vendor_id, d.product_id, d.description) for d in before}
+    return [d for d in after if (d.vendor_id, d.product_id, d.description) not in before_set]
+
+def print_devices(devices: List[USBDevice], label: str):
+    """Print a list of USB devices with a label."""
+    if not devices:
+        print(f"\nNo devices found {label}.")
+        return
+        
+    print(f"\n{label}:")
+    for i, device in enumerate(devices, 1):
+        print(f"  {i}. {device.description} (Vendor: {device.vendor_id}, Product: {device.product_id})")
+
+def main():
+    print("=== Which USB Device? ===")
+    print("This tool helps identify USB devices by comparing connection states.")
+    
+    while True:
+        print("\nChoose a workflow:")
+        print("1. Start with device disconnected (I'll connect it when prompted)")
+        print("2. Start with device connected (I'll disconnect it when prompted)")
+        print("3. Exit")
+        
+        choice = input("\nEnter your choice (1-3): ").strip()
+        
+        if choice == '3':
+            print("Goodbye!")
+            return
+            
+        if choice not in ['1', '2']:
+            print("Invalid choice. Please enter 1, 2, or 3.")
+            continue
+            
+        is_connect_workflow = (choice == '1')
+        action_verb = "connect" if is_connect_workflow else "disconnect"
+        
+        # First capture
+        print(f"\nPlease make sure the device is {'disconnected' if is_connect_workflow else 'connected'}.")
+        input(f"Press Enter when ready to capture the first state...")
+        
+        first_capture = run_lsusb()
+        print(f"Captured {len(first_capture)} devices.")
+        
+        # Second capture
+        print(f"\nNow please {action_verb} the device and press Enter when done...")
+        input()
+        
+        second_capture = run_lsusb()
+        print(f"Captured {len(second_capture)} devices.")
+        
+        # Compare and show results
+        if is_connect_workflow:
+            new_devices = get_devices_difference(first_capture, second_capture)
+            print_devices(new_devices, "Newly connected device(s)")
+        else:
+            removed_devices = get_devices_difference(second_capture, first_capture)
+            print_devices(removed_devices, "Disconnected device(s)")
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        print("Warning: This tool might need root privileges to see all USB devices.")
+        print("Consider running with sudo for more accurate results.")
+        print("Press Enter to continue or Ctrl+C to exit and re-run with sudo...")
+        input()
+    
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nAn error occurred: {e}", file=sys.stderr)
+        sys.exit(1)
